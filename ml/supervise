@@ -1,0 +1,106 @@
+#!/usr/bin/env python
+
+import json
+from dateutil.parser import parse as date_parse
+from datetime import datetime, date
+import time, os
+import pytz
+import numpy
+import sys
+import select
+import readchar
+import re
+
+count = 0
+OUTAGE="outage"
+HEALTHY="healthy"
+  
+outage_rows = []
+healthy_rows = []
+
+
+def is_valid_tweet(item, line):
+  if item['lang'] != "fr" and item['lang'] != "en":
+    return False
+  if item['user']['name'].lower().find('ovh') >= 0:
+    return False
+  if item['source'].lower().find('travaux.ovh') >= 0:
+    return False
+  #exclude .ovh url, but not .ovh.??? url
+  p = re.compile(".*\.ovh[^\.]+.*")
+  if p.match(line):
+   return False
+  #AHREF flood
+  if item["text"].lower().find("#ahref") >= 0:
+    return False
+  return True
+
+def build_data_frame(classification, path, begin = None, end = None, max_count = 0):
+  global outage_rows
+  global healthy_rows
+  line_count = 0
+  if begin is None:
+    begin_date = datetime.fromtimestamp(0, pytz.UTC)
+  else:  
+    begin_date = date_parse(begin)
+  if end is None:
+    end_date = datetime.now(pytz.UTC)
+  else:  
+    end_date = date_parse(end)
+  with open(path) as f:
+    for line in f:
+      item = json.loads(line)
+      item_date = date_parse(item["created_at"])
+      item_text = item["text"]
+      if is_valid_tweet(item, line) and begin_date < item_date < end_date:
+        line_count = line_count + 1
+        if max_count > 0 and line_count >= max_count:
+          return
+        #print json.dumps(item, indent=4, sort_keys=True)
+        print item_date
+        print item_text
+        #print("Reading a char:")
+        #continue
+        key = readchar.readkey()
+        if key == 'q' :
+ 	  return
+        if key == 'o' :
+          outage_rows.append(item)
+        if key == 'd' :
+	  print "skipping"
+        else:
+          healthy_rows.append(item)
+
+
+print "Loading all data "
+build_data_frame(OUTAGE, "../twitter/data/all.json")
+
+print "Loading outage data 1"
+#build_data_frame(OUTAGE, "../twitter/data/range.json", begin = "Tue Mar 28 04:00:00 +0000 2017", end = "Tue Mar 28 05:00:00 +0000 2017")
+
+print "Loading outage data 2"
+#build_data_frame(OUTAGE, "../twitter/data/stream_ovh.04.json", begin = "Tue Mar 30 12:40:00 +0000 2017", end = "Tue Mar 30 15:40:00 +0000 2017")
+
+print "Loading healthy data"
+#build_data_frame(HEALTHY, "../twitter/data/stream_ovh.01.json", max_count = 1000)
+
+healthy_filename = "../twitter/data/healthy2.json"
+outage_filename = "../twitter/data/outage2.json"
+
+@classmethod
+def parse(cls, api, raw):
+    status = cls.first_parse(api, raw)
+    setattr(status, 'json', json.dumps(raw))
+    return status
+
+
+def save_rows(path, rows):
+  with open(path, 'w') as f:
+    for item in rows:
+      f.write(json.dumps(item))
+      f.write('\n')  
+  
+save_rows(healthy_filename, healthy_rows)
+save_rows(outage_filename, outage_rows)
+
+

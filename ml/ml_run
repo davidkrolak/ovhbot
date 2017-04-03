@@ -1,0 +1,182 @@
+#!/usr/bin/env python
+
+import json
+#import matplotlib as mpl
+#mpl.use('Agg')
+#from matplotlib.backends.backend_pdf import PdfPages
+#import matplotlib.pyplot as plt
+
+import pygal         
+
+from dateutil.parser import parse as date_parse
+from datetime import datetime, date
+import time, os
+import pytz
+import numpy
+from pandas import DataFrame
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+from sklearn.cross_validation import KFold
+from sklearn.metrics import confusion_matrix, f1_score
+
+tz = pytz.timezone('Europe/Paris')
+
+count = 0
+data = DataFrame({'text': [], 'class': []})
+OUTAGE="outage"
+HEALTHY="healthy"
+
+def build_data_frame(classification, path, begin = None, end = None, max_count = 0):
+  print "Loading " + classification + " from " + path
+  global count
+  line_count = 0
+  rows = []
+  index = []
+  if begin is None:
+    begin_date = datetime.fromtimestamp(0, pytz.UTC)
+  else:  
+    begin_date = date_parse(begin)
+  if end is None:
+    end_date = datetime.now(pytz.UTC)
+  else:  
+    end_date = date_parse(end)
+  with open(path) as f:
+    for line in f:
+      item = json.loads(line)
+      item_date = date_parse(item["created_at"])
+      item_text = item["text"]
+      if begin_date < item_date < end_date: # and item_text.find("ovh") > 0:
+        #print item_date
+        rows.append({'text': item_text, 'class': classification})
+        index.append(count)
+        count = count + 1
+        line_count = line_count + 1
+        if max_count > 0 and line_count >= max_count:
+          break
+  data_frame = DataFrame(rows, index=index)
+  return data_frame
+
+
+#data_frame = build_data_frame(OUTAGE, "../twitter/data/range.json", begin = "Tue Mar 28 04:00:00 +0000 2017", end = "Tue Mar 28 05:00:00 +0000 2017")
+#data = data.append(data_frame)
+
+#data_frame = build_data_frame(OUTAGE, "../twitter/data/stream_ovh.04.json", begin = "Tue Mar 30 12:40:00 +0000 2017", end = "Tue Mar 30 15:40:00 +0000 2017")
+#data = data.append(data_frame)
+
+#data_frame = build_data_frame(HEALTHY, "../twitter/data/stream_ovh.01.json", max_count = 1000)
+#data = data.append(data_frame)
+
+data_frame = build_data_frame(OUTAGE, "../twitter/data/supervised/outage2.json")
+data = data.append(data_frame)
+
+data_frame = build_data_frame(HEALTHY, "../twitter/data/supervised/healthy2.json")
+data = data.append(data_frame)
+
+print "Training ML"
+data = data.reindex(numpy.random.permutation(data.index))
+count_vectorizer = CountVectorizer(ngram_range=(2,2))
+counts = count_vectorizer.fit_transform(data['text'].values)
+#print count_vectorizer.get_feature_names()
+#print len(count_vectorizer.get_feature_names())
+#print count
+#print counts
+
+
+classifier = MultinomialNB()
+targets = data['class'].values
+classifier.fit(counts, targets)
+
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+def is_valid_tweet(item):
+  if item['user']['name'].lower().find('ovh') >= 0:
+    return False
+  if item['source'].lower().find('travaux.ovh') >= 0:
+    return False
+  return True
+
+
+#examples = ['Free Viagra call today!', "My server is down"]
+#example_counts = count_vectorizer.transform(examples)
+#predictions = classifier.predict_proba(example_counts)
+#print predictions
+
+#fig = plt.figure()
+#plt.figure(figsize=(3, 3))
+#plt.plot(range(7), [3, 1, 4, 1, 5, 9, 2], 'r-o')
+#plt.title('Page One')
+#fig.savefig('temp.png')
+
+
+#bar_chart = pygal.Bar()                                            # Then create a bar graph object
+#bar_chart.add('Fibonacci', [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55])  # Add some values
+#bar_chart.render_to_file('bar_chart.svg') 
+
+chart_dates = []
+chart_values = []
+
+def follow(thefile):
+    #thefile.seek(0,2) # Go to the end of the file
+    while True:
+        line = thefile.readline()
+        if not line:
+            time.sleep(0.1) # Sleep briefly
+            continue
+	    #break
+        yield line
+
+stream_filename = "../twitter/data/stream_ovh.json"
+#stream_filename = "../twitter/data/all.json"
+
+count = 0
+print "Monitoring tweets from '" + stream_filename + "' ..."
+with open(stream_filename) as f:
+  loglines = follow(f)
+  for line in loglines:
+    try:
+      item = json.loads(line)
+    except ValueError:
+      print("Oops!  That was no valid number.  Try again...")
+      continue
+    item_text = item["text"]
+    if is_valid_tweet(item):
+      item_counts = count_vectorizer.transform([item_text])
+      item_date = date_parse(item["created_at"]).astimezone(tz)
+      predictions = classifier.predict_proba(item_counts)
+      outage_prediction = predictions[0][1]
+      chart_dates.append(item_date)
+      chart_values.append(outage_prediction)
+      count = count + 1
+      if outage_prediction > 0.80:
+        print bcolors.FAIL,
+      elif outage_prediction > 0.2:
+        print bcolors.WARNING,
+      else:
+        #print bcolors.OKGREEN,
+	continue
+
+      print "--------------------"
+      print item_date.strftime("%b %d %Y %H:%M:%S") + " OUTAGE prediction : {:10.4f}".format(outage_prediction)
+      print item_text
+      #print json.dumps(item, indent=4, sort_keys=True)
+      print "--------------------" + bcolors.ENDC
+
+
+
+chart = pygal.Line(x_label_rotation=20)
+chart.x_labels = map(lambda d: d.strftime('%Y-%m-%d'), chart_dates)
+chart.add("Visits", chart_values)
+chart.render_to_file('chart.svg')
+
+
+
